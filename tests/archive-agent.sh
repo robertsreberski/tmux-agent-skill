@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+# CI runs outside tmux. Do not let a developer's inherited client context hide
+# clientless-server formatting differences in display-message output.
+unset TMUX TMUX_PANE
+
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 archive_agent="$repo_root/tmux/scripts/archive-agent"
 session_info="$repo_root/tmux/scripts/session-info"

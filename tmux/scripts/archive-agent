@@ -78,15 +78,22 @@ else
   socket_record=default
 fi
 
-pane_format=$'#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}'
-pane_details=$("${tmux_cmd[@]}" display-message -p -t "$target" "$pane_format" 2>/dev/null) || \
+pane_id=$("${tmux_cmd[@]}" display-message -p -t "$target" '#{pane_id}' 2>/dev/null) || \
   fail "no such tmux target on the selected socket: $target"
-pane_id=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $1}')
-session_name=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $2}')
-window_index=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $3}')
-window_name=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $4}')
-pane_index=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $5}')
-[[ -n "$pane_id" && -n "$session_name" && -n "$window_index" && -n "$pane_index" ]] || \
+[[ "$pane_id" =~ ^%[0-9]+$ ]] || \
+  fail "could not canonicalize tmux target: $target"
+
+# A clientless tmux server sanitizes control characters in display-message
+# output, so a tab-delimited multi-field format is not portable to CI.
+session_name=$("${tmux_cmd[@]}" display-message -p -t "$pane_id" '#{session_name}' 2>/dev/null) || \
+  fail "pane disappeared while canonicalizing tmux target: $target"
+window_index=$("${tmux_cmd[@]}" display-message -p -t "$pane_id" '#{window_index}' 2>/dev/null) || \
+  fail "pane disappeared while canonicalizing tmux target: $target"
+window_name=$("${tmux_cmd[@]}" display-message -p -t "$pane_id" '#{window_name}' 2>/dev/null) || \
+  fail "pane disappeared while canonicalizing tmux target: $target"
+pane_index=$("${tmux_cmd[@]}" display-message -p -t "$pane_id" '#{pane_index}' 2>/dev/null) || \
+  fail "pane disappeared while canonicalizing tmux target: $target"
+[[ -n "$session_name" && -n "$window_index" && -n "$pane_index" ]] || \
   fail "could not canonicalize tmux target: $target"
 tmux_window="$session_name:$window_index"
 tmux_pane="$tmux_window.$pane_index"
