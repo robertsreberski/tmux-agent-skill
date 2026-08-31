@@ -28,11 +28,11 @@ Before giving key instructions or relying on indexes and history, read the live 
 ```bash
 tmux show-options -gqv prefix
 tmux show-options -gqv base-index
-tmux show-window-options -gqv pane-base-index
+tmux show-window-options -g pane-base-index
 tmux show-options -gqv renumber-windows
-tmux show-window-options -gqv history-limit
-tmux show-window-options -gqv monitor-activity
-tmux show-window-options -gqv monitor-bell
+tmux show-window-options -g history-limit
+tmux show-window-options -g monitor-activity
+tmux show-window-options -g monitor-bell
 ```
 
 Do not edit the user's tmux configuration unless explicitly asked. Use exact-match targets such as `-t '=session'` and `-t '=session:window'`, especially for numeric or punctuation-heavy names.
