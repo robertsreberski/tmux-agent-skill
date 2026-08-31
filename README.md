@@ -18,7 +18,7 @@ For a manual install, copy the [`tmux`](./tmux) directory into a user or project
 
 - macOS
 - `tmux`
-- Stock macOS utilities used by the optional transcript helper: `ps`, `lsof`, `date`, `find`, `stat`, `sed`, and `awk`
+- Stock macOS utilities used by the optional transcript helper: `ps`, `lsof`, `date`, `find`, `stat`, `sed`, `awk`, and `plutil`
 - Claude Code, Codex, or OpenCode only for their optional workflows
 
 ## What it does
