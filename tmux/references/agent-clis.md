@@ -53,6 +53,8 @@ Resolve `scripts/...` against the skill directory. When using an alternate serve
 
 Always inspect the settled screen. A readiness marker can occur inside a dialog or old transcript, and a process-name change alone does not prove the input area is ready. Never auto-answer setup, login, trust, permission, purchase, or destructive dialogs. Never send passwords, API keys, access tokens, or other secrets through tmux because they can remain in shell history, scrollback, and agent transcripts.
 
+`scripts/wait-for` is intentionally a single-pane startup helper: it waits for one literal marker and returns `0` when found, `1` on timeout, or `2` for invalid input, target, socket, or dependency. It does not classify an agent turn as busy, idle, or blocked, and it must not be used as a multi-window completion detector. After startup has settled, use the [orchestrator polling playbook](orchestrator-polling.md) to supervise several windows.
+
 ## Prepare the fan-out and approval gate
 
 Use [`git-worktrees.md`](git-worktrees.md) to create one authorized branch and worktree per independent unit of work, then place one shell-backed tmux window in each worktree. Keep one reviewer window in the main checkout; it can review plans against the issue and source, and later inspect committed task branches through the shared object store. Use cheaper model/effort settings for narrow, well-specified tasks and higher settings for open-ended design, migrations, or review.
