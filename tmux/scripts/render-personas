@@ -1,0 +1,144 @@
+#!/bin/bash
+# Render canonical persona source into Codex, Claude Code, and OpenCode formats.
+set -euo pipefail
+
+mode=${1:---write}
+case "$mode" in
+  --write|--check) ;;
+  *)
+    echo "usage: render-personas [--write|--check]" >&2
+    exit 2
+    ;;
+esac
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+skill_dir=$(cd "$script_dir/.." && pwd)
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "render-personas: node is required" >&2
+  exit 2
+fi
+
+node - "$skill_dir" "$mode" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const skillDir = process.argv[2];
+const mode = process.argv[3];
+const personasDir = path.join(skillDir, "personas");
+const sourceDir = path.join(personasDir, "source");
+
+const roles = {
+  planner: {
+    description: "Investigates and produces a decision-complete plan, then waits for explicit approval.",
+    effort: "high",
+    claudeTools: ["Read", "Glob", "Grep", "Bash"],
+    readOnly: true,
+  },
+  implementer: {
+    description: "Executes an approved plan in scope, verifies it, and commits without pushing.",
+    effort: "high",
+    claudeTools: ["Read", "Glob", "Grep", "Bash", "Edit", "Write"],
+    readOnly: false,
+  },
+  reviewer: {
+    description: "Reviews a branch against acceptance criteria and reports evidence-backed findings without edits.",
+    effort: "high",
+    claudeTools: ["Read", "Glob", "Grep", "Bash"],
+    readOnly: true,
+  },
+  explorer: {
+    description: "Performs bounded read-only reconnaissance and returns precise evidence.",
+    effort: "medium",
+    claudeTools: ["Read", "Glob", "Grep", "Bash"],
+    readOnly: true,
+  },
+};
+
+function read(file) {
+  return fs.readFileSync(file, "utf8").trim();
+}
+
+function promptFor(role) {
+  return `${read(path.join(sourceDir, "common.md"))}\n\n${read(path.join(sourceDir, `${role}.md`))}\n`;
+}
+
+function assertSafe(role, prompt) {
+  if (prompt.includes("'''")) {
+    throw new Error(`${role}: canonical prompt cannot contain TOML triple single quotes`);
+  }
+  const marker = `TMUX_PERSONA_ACTIVE=${role}`;
+  if (!prompt.includes(marker)) {
+    throw new Error(`${role}: missing activation marker ${marker}`);
+  }
+}
+
+const outputs = new Map();
+const claudeAgents = {};
+const opencodeAgents = {};
+
+for (const [role, metadata] of Object.entries(roles)) {
+  const prompt = promptFor(role);
+  assertSafe(role, prompt);
+
+  outputs.set(
+    path.join(personasDir, "codex", `${role}.toml`),
+    `name = ${JSON.stringify(role)}\n` +
+      `description = ${JSON.stringify(metadata.description)}\n` +
+      `model_reasoning_effort = ${JSON.stringify(metadata.effort)}\n` +
+      `developer_instructions = '''\n${prompt}'''\n`,
+  );
+
+  outputs.set(
+    path.join(personasDir, "claude", `${role}.md`),
+    `---\n` +
+      `name: ${role}\n` +
+      `description: ${metadata.description}\n` +
+      `model: inherit\n` +
+      `tools: ${metadata.claudeTools.join(", ")}\n` +
+      `---\n\n${prompt}`,
+  );
+
+  claudeAgents[role] = {
+    description: metadata.description,
+    prompt,
+    model: "inherit",
+    tools: metadata.claudeTools,
+  };
+
+  const opencode = {
+    description: metadata.description,
+    mode: "all",
+    prompt,
+  };
+  if (metadata.readOnly) {
+    opencode.permission = { edit: "deny" };
+  }
+  opencodeAgents[role] = opencode;
+}
+
+outputs.set(
+  path.join(personasDir, "claude", "agents.json"),
+  `${JSON.stringify(claudeAgents, null, 2)}\n`,
+);
+outputs.set(
+  path.join(personasDir, "opencode", "opencode.json"),
+  `${JSON.stringify({ $schema: "https://opencode.ai/config.json", agent: opencodeAgents }, null, 2)}\n`,
+);
+
+let drift = false;
+for (const [file, content] of outputs) {
+  if (mode === "--write") {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    continue;
+  }
+  if (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== content) {
+    console.error(`render-personas: generated file is stale: ${path.relative(skillDir, file)}`);
+    drift = true;
+  }
+}
+
+if (drift) process.exit(1);
+if (mode === "--check") console.log("render-personas: ok");
+NODE
