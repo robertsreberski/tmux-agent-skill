@@ -10,7 +10,7 @@ metadata:
 
 Use this skill to inspect and operate the user's interactive tmux servers on macOS. Prefer read-only discovery before mutation, keep one socket selected throughout a workflow, and adapt to the live tmux configuration instead of assuming a prefix key, index base, history limit, or monitoring setup.
 
-This skill requires macOS and `tmux`. For creating, inspecting, operating, or removing Git worktrees paired with tmux sessions, read [references/git-worktrees.md](references/git-worktrees.md) only when that capability is requested. For booting Claude Code, Codex, or OpenCode and resolving their session transcripts, read [references/agent-clis.md](references/agent-clis.md) only when that capability is requested.
+This skill requires macOS and `tmux`. For creating, inspecting, operating, or removing Git worktrees paired with tmux sessions, read [references/git-worktrees.md](references/git-worktrees.md) only when that capability is requested. For booting Claude Code, Codex, or OpenCode, running a plan-review-approval workflow, or resolving their session transcripts, read [references/agent-clis.md](references/agent-clis.md) only when that capability is requested.
 
 ## Select one tmux server
 
@@ -121,12 +121,15 @@ tmux switch-client -t '=session'
 tmux select-window -t '=session:window'
 ```
 
-Explain the detected prefix and detach sequence using `tmux show-options -gqv prefix`; never assume the default. If the session is detached, selecting its target window is safe. If a user is attached, hand them the command instead of changing their current view.
+Do not run `tmux attach-session` from an agent's background terminal; it can block indefinitely waiting for an interactive client. Explain the detected prefix and detach sequence using `tmux show-options -gqv prefix`; never assume the default. If the session is detached, selecting its target window is safe. If a user is attached, hand them the command instead of changing their current view.
 
 ## Safety invariants
 
 - Keep one verified socket for the whole workflow.
+- Create disposable verification sessions only on a unique isolated `tmux -L <name>` socket, never on the default or another live server.
 - Re-resolve targets immediately before structural changes or input sends.
 - Capture before and after every send and confirm the expected program received it.
+- Never switch an agent from planning to implementation before an explicit reviewer approval, and verify the execution-mode marker before sending the implementation prompt.
+- Never run an interactive tmux attach command from a background agent terminal; inspect with exact-target captures and hand attachment to the user.
 - Treat existing sessions as load-bearing until the user identifies the exact mutation.
 - Never expose transcript contents, credentials, or private pane output beyond what the user requested.
