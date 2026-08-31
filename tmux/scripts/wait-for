@@ -1,0 +1,63 @@
+#!/bin/bash
+# wait-for <target> <literal-text> [timeout-sec=30] [interval-sec=1]
+#
+# Poll a tmux pane for literal text in its visible screen or last 200 lines.
+# Exit 0 = found, 1 = timeout, 2 = invalid input, target, socket, or dependency.
+set -u
+
+target=${1:-}
+text=${2:-}
+timeout=${3:-30}
+interval=${4:-1}
+
+if [[ -z "$target" || -z "$text" ]]; then
+  echo "usage: wait-for <target> <literal-text> [timeout-sec=30] [interval-sec=1]" >&2
+  exit 2
+fi
+if [[ ! "$timeout" =~ ^[0-9]+$ ]]; then
+  echo "wait-for: timeout must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ ! "$interval" =~ ^[0-9]+([.][0-9]+)?$ || "$interval" == 0 || "$interval" == 0.0 ]]; then
+  echo "wait-for: interval must be a positive number" >&2
+  exit 2
+fi
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "wait-for: tmux is not installed or not on PATH" >&2
+  exit 2
+fi
+if [[ -n "${TMUX_SOCKET_PATH:-}" && -n "${TMUX_SOCKET_NAME:-}" ]]; then
+  echo "wait-for: set only one of TMUX_SOCKET_PATH or TMUX_SOCKET_NAME" >&2
+  exit 2
+fi
+
+if [[ -n "${TMUX_SOCKET_PATH:-}" ]]; then
+  tmux_cmd=(tmux -S "$TMUX_SOCKET_PATH")
+elif [[ -n "${TMUX_SOCKET_NAME:-}" ]]; then
+  tmux_cmd=(tmux -L "$TMUX_SOCKET_NAME")
+else
+  tmux_cmd=(tmux)
+fi
+
+# capture-pane is authoritative here; display-message may succeed for a bad target.
+if ! "${tmux_cmd[@]}" capture-pane -p -t "$target" >/dev/null 2>&1; then
+  echo "wait-for: no such tmux target on the selected socket: $target" >&2
+  exit 2
+fi
+
+deadline=$(( $(date +%s) + timeout ))
+while true; do
+  if ! screen=$("${tmux_cmd[@]}" capture-pane -p -J -t "$target" -S -200 2>/dev/null); then
+    echo "wait-for: tmux target disappeared: $target" >&2
+    exit 2
+  fi
+  if printf '%s\n' "$screen" | grep -qF -- "$text"; then
+    exit 0
+  fi
+  if (( $(date +%s) >= deadline )); then
+    echo "wait-for: '$text' not seen in $target after ${timeout}s; last screen:" >&2
+    "${tmux_cmd[@]}" capture-pane -p -t "$target" | tail -25 >&2
+    exit 1
+  fi
+  sleep "$interval"
+done

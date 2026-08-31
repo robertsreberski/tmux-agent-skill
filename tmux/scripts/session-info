@@ -1,0 +1,195 @@
+#!/bin/bash
+# session-info <target>
+#
+# Resolve a Claude Code, Codex, or OpenCode process in a macOS tmux pane and
+# locate its session transcript without reading transcript contents.
+# Exit 0 = confident match, 3 = ambiguous/unconfirmed, 2 = invalid input/state.
+set -u
+export LC_ALL=C
+
+target=${1:-}
+
+if [[ -z "$target" ]]; then
+  echo "usage: session-info <target>" >&2
+  exit 2
+fi
+for dependency in tmux ps lsof date find stat sed awk; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    echo "session-info: required command is not available: $dependency" >&2
+    exit 2
+  fi
+done
+if [[ $(uname -s) != Darwin ]]; then
+  echo "session-info: this helper currently supports macOS only" >&2
+  exit 2
+fi
+if [[ -n "${TMUX_SOCKET_PATH:-}" && -n "${TMUX_SOCKET_NAME:-}" ]]; then
+  echo "session-info: set only one of TMUX_SOCKET_PATH or TMUX_SOCKET_NAME" >&2
+  exit 2
+fi
+
+if [[ -n "${TMUX_SOCKET_PATH:-}" ]]; then
+  tmux_cmd=(tmux -S "$TMUX_SOCKET_PATH")
+elif [[ -n "${TMUX_SOCKET_NAME:-}" ]]; then
+  tmux_cmd=(tmux -L "$TMUX_SOCKET_NAME")
+else
+  tmux_cmd=(tmux)
+fi
+
+if ! "${tmux_cmd[@]}" capture-pane -p -t "$target" >/dev/null 2>&1; then
+  echo "session-info: no such tmux target on the selected socket: $target" >&2
+  exit 2
+fi
+
+tty=$("${tmux_cmd[@]}" display-message -p -t "$target" '#{pane_tty}')
+tty=${tty#/dev/}
+cli='' pid='' lstart='' command_line=''
+
+while read -r process_pid w1 w2 w3 w4 w5 process_command; do
+  first=${process_command%% *}
+  first_base=${first##*/}
+  second=$(printf '%s\n' "$process_command" | awk '{print $2}')
+  second_base=${second##*/}
+  candidate=$first_base
+  case "$first_base" in
+    node|bash|sh|zsh) candidate=$second_base ;;
+  esac
+  case "$candidate" in
+    claude|claude.exe) cli=claude ;;
+    codex|codex.js) cli=codex ;;
+    opencode) cli=opencode ;;
+    *) continue ;;
+  esac
+  pid=$process_pid
+  lstart="$w1 $w2 $w3 $w4 $w5"
+  command_line=$process_command
+  break
+done < <(ps -t "$tty" -o pid=,lstart=,command=)
+
+if [[ -z "$cli" ]]; then
+  echo "session-info: no claude/codex/opencode process on $target (tty $tty)" >&2
+  exit 2
+fi
+
+cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+if [[ -z "$cwd" ]]; then
+  echo "session-info: could not resolve the working directory for pid $pid" >&2
+  exit 2
+fi
+if ! start_epoch=$(date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null); then
+  echo "session-info: could not parse process start time: $lstart" >&2
+  exit 2
+fi
+
+echo "cli=$cli"
+echo "pid=$pid"
+echo "started=$lstart"
+echo "cwd=$cwd"
+
+case "$cli" in
+  claude)
+    root=${TMUX_SKILL_CLAUDE_PROJECTS_DIR:-${HOME:-}/.claude/projects}
+    project=$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')
+    directory="$root/$project"
+    pattern='*.jsonl'
+    depth=1
+    resume_id=$(printf '%s\n' "$command_line" | sed -nE 's/.*--resume[= ]+([^ ]+).*/\1/p' | head -1)
+    ;;
+  codex)
+    root=${TMUX_SKILL_CODEX_SESSIONS_DIR:-${HOME:-}/.codex/sessions}
+    directory=$root
+    pattern='rollout-*.jsonl'
+    depth=6
+    resume_id=$(printf '%s\n' "$command_line" | sed -nE 's/.*[[:space:]]resume[[:space:]]+([^ ]+).*/\1/p' | head -1)
+    ;;
+  opencode)
+    root=${TMUX_SKILL_OPENCODE_SESSIONS_DIR:-${HOME:-}/.local/share/opencode/storage/session}
+    directory=$root
+    pattern='ses_*.json'
+    depth=3
+    resume_id=$(printf '%s\n' "$command_line" | sed -nE 's/.*--session[= ]+([^ ]+).*/\1/p' | head -1)
+    ;;
+esac
+
+session_id_for_path() {
+  local base
+  base=$(basename "$1")
+  case "$cli" in
+    claude) echo "${base%.jsonl}" ;;
+    codex)
+      base=${base%.jsonl}
+      base=${base#rollout-}
+      echo "${base:20}"
+      ;;
+    opencode) echo "${base%.json}" ;;
+  esac
+}
+
+if [[ -n "$resume_id" && "$resume_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  resumed=()
+  while IFS= read -r -d $'\0' file; do resumed+=("$file"); done \
+    < <(find "$root" -maxdepth "$depth" -type f -name "*$resume_id*" -print0 2>/dev/null)
+  if [[ ${#resumed[@]} -eq 1 ]]; then
+    echo "note=matched explicit resume id from process command"
+    echo "session_id=$resume_id"
+    echo "transcript=${resumed[0]}"
+    exit 0
+  fi
+fi
+
+reference=$(mktemp "${TMPDIR:-/tmp}/tmux-session-info.XXXXXX")
+trap 'rm -f "$reference"' EXIT
+timestamp=$(date -j -f '%a %b %e %T %Y' "$lstart" +%Y%m%d%H%M.%S)
+touch -t "$timestamp" "$reference"
+
+candidates=()
+while IFS= read -r -d $'\0' file; do candidates+=("$file"); done \
+  < <(find "$directory" -maxdepth "$depth" -type f -name "$pattern" -newer "$reference" -print0 2>/dev/null)
+
+# A fresh Codex rollout embeds its start timestamp in the filename. Prefer the
+# one within two minutes of the pane process start when other Codex processes
+# wrote rollouts in the same global tree.
+if [[ "$cli" == codex && ${#candidates[@]} -gt 1 ]]; then
+  matched=()
+  for file in "${candidates[@]}"; do
+    base=$(basename "$file")
+    base=${base#rollout-}
+    file_epoch=$(date -j -f '%Y-%m-%dT%H-%M-%S' "${base:0:19}" +%s 2>/dev/null) || continue
+    delta=$(( file_epoch - start_epoch ))
+    (( delta < 0 )) && delta=$(( -delta ))
+    (( delta <= 120 )) && matched+=("$file")
+  done
+  if [[ ${#matched[@]} -eq 1 ]]; then
+    candidates=("${matched[0]}")
+    echo "note=matched rollout filename timestamp to process start"
+  fi
+fi
+
+if [[ ${#candidates[@]} -eq 1 ]]; then
+  echo "session_id=$(session_id_for_path "${candidates[0]}")"
+  echo "transcript=${candidates[0]}"
+  exit 0
+fi
+
+if [[ ${#candidates[@]} -eq 0 ]]; then
+  newest=''
+  newest_epoch=0
+  while IFS= read -r -d $'\0' file; do
+    file_epoch=$(stat -f '%m' "$file" 2>/dev/null) || continue
+    if (( file_epoch > newest_epoch )); then
+      newest=$file
+      newest_epoch=$file_epoch
+    fi
+  done < <(find "$directory" -maxdepth "$depth" -type f -name "$pattern" -print0 2>/dev/null)
+  echo "note=no transcript was modified since process start; newest candidate is unconfirmed"
+  if [[ -n "$newest" ]]; then
+    echo "candidate=$newest session_id=$(session_id_for_path "$newest")"
+  fi
+  exit 3
+fi
+
+echo "note=${#candidates[@]} sessions share this scope; disambiguate with a distinctive phrase from the visible pane"
+for file in "${candidates[@]}"; do
+  echo "candidate=$file session_id=$(session_id_for_path "$file")"
+done
+exit 3

@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install test dependencies
+        run: brew install tmux shellcheck
+      - name: Lint shell scripts
+        run: shellcheck tmux/scripts/* tests/smoke.sh
+      - name: Run isolated tmux smoke tests
+        run: bash tests/smoke.sh
+      - name: Verify skill discovery
+        run: npx --yes skills add . --list | grep -q tmux
