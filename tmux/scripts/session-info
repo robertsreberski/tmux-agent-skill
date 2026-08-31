@@ -13,7 +13,7 @@ if [[ -z "$target" ]]; then
   echo "usage: session-info <target>" >&2
   exit 2
 fi
-for dependency in tmux ps lsof date find stat sed awk; do
+for dependency in tmux ps lsof date find stat sed awk plutil; do
   if ! command -v "$dependency" >/dev/null 2>&1; then
     echo "session-info: required command is not available: $dependency" >&2
     exit 2
@@ -125,6 +125,17 @@ session_id_for_path() {
   esac
 }
 
+candidate_cwd_for_path() {
+  case "$cli" in
+    codex)
+      head -n 1 "$1" | plutil -extract payload.cwd raw - 2>/dev/null
+      ;;
+    opencode)
+      plutil -extract directory raw "$1" 2>/dev/null
+      ;;
+  esac
+}
+
 if [[ -n "$resume_id" && "$resume_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
   resumed=()
   while IFS= read -r -d $'\0' file; do resumed+=("$file"); done \
@@ -146,22 +157,58 @@ candidates=()
 while IFS= read -r -d $'\0' file; do candidates+=("$file"); done \
   < <(find "$directory" -maxdepth "$depth" -type f -name "$pattern" -newer "$reference" -print0 2>/dev/null)
 
-# A fresh Codex rollout embeds its start timestamp in the filename. Prefer the
-# one within two minutes of the pane process start when other Codex processes
-# wrote rollouts in the same global tree.
+# A fresh Codex rollout embeds its start timestamp in the filename. Require the
+# filename window and recorded cwd together so concurrent worktrees do not
+# collide, while the timestamp still excludes an older launch in the same cwd.
 if [[ "$cli" == codex && ${#candidates[@]} -gt 1 ]]; then
   matched=()
+  unconfirmed=0
   for file in "${candidates[@]}"; do
     base=$(basename "$file")
     base=${base#rollout-}
     file_epoch=$(date -j -f '%Y-%m-%dT%H-%M-%S' "${base:0:19}" +%s 2>/dev/null) || continue
     delta=$(( file_epoch - start_epoch ))
     (( delta < 0 )) && delta=$(( -delta ))
-    (( delta <= 120 )) && matched+=("$file")
+    (( delta <= 120 )) || continue
+    if ! candidate_cwd=$(candidate_cwd_for_path "$file"); then
+      unconfirmed=1
+      continue
+    fi
+    if [[ -z "$candidate_cwd" ]]; then
+      unconfirmed=1
+      continue
+    fi
+    [[ "$candidate_cwd" == "$cwd" ]] && matched+=("$file")
   done
-  if [[ ${#matched[@]} -eq 1 ]]; then
-    candidates=("${matched[0]}")
-    echo "note=matched rollout filename timestamp to process start"
+  if [[ $unconfirmed -eq 0 && ${#matched[@]} -gt 0 ]]; then
+    candidates=("${matched[@]}")
+    if [[ ${#matched[@]} -eq 1 ]]; then
+      echo "note=matched rollout filename timestamp and working directory to process"
+    fi
+  fi
+fi
+
+# OpenCode session files share a global tree. Their directory field narrows a
+# concurrent fan-out without guessing when several sessions share one cwd.
+if [[ "$cli" == opencode && ${#candidates[@]} -gt 1 ]]; then
+  matched=()
+  unconfirmed=0
+  for file in "${candidates[@]}"; do
+    if ! candidate_cwd=$(candidate_cwd_for_path "$file"); then
+      unconfirmed=1
+      continue
+    fi
+    if [[ -z "$candidate_cwd" ]]; then
+      unconfirmed=1
+      continue
+    fi
+    [[ "$candidate_cwd" == "$cwd" ]] && matched+=("$file")
+  done
+  if [[ $unconfirmed -eq 0 && ${#matched[@]} -gt 0 ]]; then
+    candidates=("${matched[@]}")
+    if [[ ${#matched[@]} -eq 1 ]]; then
+      echo "note=matched OpenCode session working directory to process"
+    fi
   fi
 fi
 
