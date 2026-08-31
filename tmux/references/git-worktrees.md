@@ -167,6 +167,8 @@ Stop and ask the user when:
 
 Never switch, detach, or kill an attached client on the user's behalf. Hand the user the exact detach or handoff command and wait. Killing a detached pre-existing session still requires confirmation of its exact name and all windows. Never remove a worktree while a pane is still using it as a working directory.
 
+Before requesting authorization to kill a window that contains a supported agent CLI, follow [agent-archives.md](agent-archives.md). Archive and verify every agent session reference while each pane-to-process relationship still exists. A review-confidence archive blocks teardown, and a high-confidence archive still does not authorize the kill.
+
 After authorization, remove the tmux session first, then the clean worktree:
 
 ```bash

@@ -15,7 +15,7 @@ jobs:
       - name: Install test dependencies
         run: brew install tmux shellcheck
       - name: Lint shell scripts
-        run: shellcheck tmux/scripts/* tests/smoke.sh
+        run: shellcheck tmux/scripts/* tests/*.sh
       - name: Verify generated personas
         run: |
           tmux/scripts/render-personas --check
@@ -24,5 +24,7 @@ jobs:
         run: bash tests/smoke.sh
       - name: Run persona tests
         run: bash tests/personas.sh
+      - name: Run agent archive tests
+        run: bash tests/archive-agent.sh
       - name: Verify skill discovery
         run: npx --yes skills add . --list | grep -q tmux

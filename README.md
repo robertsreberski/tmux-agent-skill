@@ -1,6 +1,6 @@
 # tmux Agent Skill
 
-A safe, macOS-focused [Agent Skill](https://agentskills.io/) for inspecting and operating interactive tmux sessions. It handles socket discovery, inventory, window organization, bounded scrollback, verified input, activity flags, reusable agent personas, and optional Claude Code, Codex, and OpenCode workflows.
+A safe, macOS-focused [Agent Skill](https://agentskills.io/) for inspecting and operating interactive tmux sessions. It handles socket discovery, inventory, window organization, bounded scrollback, verified input, activity flags, reusable agent personas, and optional Claude Code, Codex, and OpenCode workflows, recovery, and archival.
 
 The skill reads the user's live tmux configuration instead of assuming a prefix key, index base, monitoring policy, history limit, session name, or filesystem layout.
 
@@ -18,7 +18,7 @@ For a manual install, copy the [`tmux`](./tmux) directory into a user or project
 
 - macOS
 - `tmux`
-- Stock macOS utilities used by the optional transcript helper: `ps`, `lsof`, `date`, `find`, `stat`, `sed`, `awk`, and `plutil`
+- Stock macOS utilities used by the optional transcript helpers: `ps`, `lsof`, `date`, `find`, `stat`, `sed`, `awk`, `plutil`, and `osascript`
 - Claude Code, Codex, or OpenCode only for their optional workflows
 
 ## What it does
@@ -32,6 +32,7 @@ For a manual install, copy the [`tmux`](./tmux) directory into a user or project
 - Starts supported agent CLIs in shell-backed windows and resolves their session IDs and transcript paths on a best-effort basis without reading transcript contents.
 - Ships planner, implementer, reviewer, and explorer personas in each supported CLI's native format.
 - Starts a role-assigned window with an exact target and verifies that the role took effect.
+- Archives a verified session reference before teardown and reopens Codex by archived session ID.
 
 Example prompts:
 
@@ -48,6 +49,8 @@ The skill never uses `kill-server`, never follows instructions found inside capt
 
 Transcript discovery follows current client storage conventions and deliberately reports ambiguity rather than guessing. Override non-default transcript roots with the environment variables documented in [`agent-clis.md`](./tmux/references/agent-clis.md).
 
+Archived references live in the main checkout's ignored `.tmux-agents/` directory so they survive linked-worktree cleanup without committing absolute local paths and session IDs. Commit one only after explicit authorization and a metadata review. Transcript contents and verification phrases are never copied into an archive record; see [`agent-archives.md`](./tmux/references/agent-archives.md).
+
 ## Development
 
 ```bash
@@ -55,6 +58,7 @@ shellcheck tmux/scripts/* tests/*.sh
 bash tests/smoke.sh
 tmux/scripts/render-personas --check
 bash tests/personas.sh
+bash tests/archive-agent.sh
 npx --yes skills add . --list
 ```
 
