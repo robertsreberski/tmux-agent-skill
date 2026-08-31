@@ -1,6 +1,6 @@
 ---
 name: tmux
-description: macOS tmux assistant for inspecting and organizing sessions, windows, and panes; reading scrollback; sending input safely; checking activity, bell, and silence flags; discovering alternate sockets; and optionally operating Claude Code, Codex, or OpenCode running inside tmux. Use when the user mentions tmux, sessions, windows, panes, attach, detach, send-keys, capture-pane, terminal agents, or recovering an agent session from tmux.
+description: macOS tmux assistant for inspecting and organizing sessions, windows, and panes; pairing Git worktrees with tmux sessions; reading scrollback; sending input safely; checking activity, bell, and silence flags; discovering alternate sockets; and optionally operating Claude Code, Codex, or OpenCode running inside tmux. Use when the user mentions tmux, sessions, windows, panes, attach, detach, send-keys, capture-pane, Git worktrees with tmux, terminal agents, or recovering an agent session from tmux.
 license: MIT
 metadata:
   source: https://github.com/robertsreberski/tmux-agent-skill/tree/main/tmux
@@ -10,7 +10,7 @@ metadata:
 
 Use this skill to inspect and operate the user's interactive tmux servers on macOS. Prefer read-only discovery before mutation, keep one socket selected throughout a workflow, and adapt to the live tmux configuration instead of assuming a prefix key, index base, history limit, or monitoring setup.
 
-This skill requires macOS and `tmux`. For booting Claude Code, Codex, or OpenCode and resolving their session transcripts, read [references/agent-clis.md](references/agent-clis.md) only when that capability is requested.
+This skill requires macOS and `tmux`. For creating, inspecting, operating, or removing Git worktrees paired with tmux sessions, read [references/git-worktrees.md](references/git-worktrees.md) only when that capability is requested. For booting Claude Code, Codex, or OpenCode and resolving their session transcripts, read [references/agent-clis.md](references/agent-clis.md) only when that capability is requested.
 
 ## Select one tmux server
 
