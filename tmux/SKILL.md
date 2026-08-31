@@ -1,6 +1,6 @@
 ---
 name: tmux
-description: macOS tmux assistant for inspecting and organizing sessions, windows, and panes; pairing Git worktrees with tmux sessions; reading scrollback; sending input safely; checking activity, bell, and silence flags; discovering alternate sockets; and optionally operating Claude Code, Codex, or OpenCode running inside tmux. Use when the user mentions tmux, sessions, windows, panes, attach, detach, send-keys, capture-pane, Git worktrees with tmux, terminal agents, or recovering an agent session from tmux.
+description: macOS tmux assistant for inspecting and organizing sessions, windows, and panes; pairing Git worktrees with tmux sessions; reading scrollback; sending input safely; checking activity, bell, and silence flags; discovering alternate sockets; and optionally operating or archiving Claude Code, Codex, or OpenCode running inside tmux. Use when the user mentions tmux, sessions, windows, panes, attach, detach, send-keys, capture-pane, Git worktrees with tmux, terminal agents, archiving before teardown, or recovering an agent session from tmux.
 license: MIT
 metadata:
   source: https://github.com/robertsreberski/tmux-agent-skill/tree/main/tmux
@@ -10,7 +10,7 @@ metadata:
 
 Use this skill to inspect and operate the user's interactive tmux servers on macOS. Prefer read-only discovery before mutation, keep one socket selected throughout a workflow, and adapt to the live tmux configuration instead of assuming a prefix key, index base, history limit, or monitoring setup.
 
-This skill requires macOS and `tmux`. For creating, inspecting, operating, or removing Git worktrees paired with tmux sessions, read [references/git-worktrees.md](references/git-worktrees.md) only when that capability is requested. For booting Claude Code, Codex, or OpenCode, assigning a bundled planner/implementer/reviewer/explorer persona, running a plan-review-approval workflow, or resolving session transcripts, read [references/agent-clis.md](references/agent-clis.md) only when that capability is requested. For supervising several agent CLI windows at once, read [references/orchestrator-polling.md](references/orchestrator-polling.md).
+This skill requires macOS and `tmux`. For creating, inspecting, operating, or removing Git worktrees paired with tmux sessions, read [references/git-worktrees.md](references/git-worktrees.md) only when that capability is requested. For booting Claude Code, Codex, or OpenCode, assigning a bundled planner/implementer/reviewer/explorer persona, running a plan-review-approval workflow, or resolving session transcripts, read [references/agent-clis.md](references/agent-clis.md) only when that capability is requested. For supervising several agent CLI windows at once, read [references/orchestrator-polling.md](references/orchestrator-polling.md). Before killing an agent window, or when reopening an archived Codex session, read [references/agent-archives.md](references/agent-archives.md).
 
 ## Select one tmux server
 
@@ -134,4 +134,5 @@ Do not run `tmux attach-session` from an agent's background terminal; it can blo
 - Never switch an agent from planning to implementation before an explicit reviewer approval, and verify the execution-mode marker before sending the implementation prompt.
 - Never run an interactive tmux attach command from a background agent terminal; inspect with exact-target captures and hand attachment to the user.
 - Treat existing sessions as load-bearing until the user identifies the exact mutation.
+- Archive any required agent session reference while its pane is still alive; archival never implies authorization to kill it.
 - Never expose transcript contents, credentials, or private pane output beyond what the user requested.

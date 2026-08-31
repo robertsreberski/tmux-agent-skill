@@ -1,0 +1,442 @@
+#!/bin/bash
+# archive-agent [--verify-phrase-file <path|->] [--record-name <slug>] <target>
+#
+# Archive an agent session reference while its tmux pane is still alive.
+# Exit 0 = high-confidence archive, 3 = review archive, 2 = invalid state.
+set -u
+export LC_ALL=C
+umask 077
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+session_info="$script_dir/session-info"
+phrase_file=''
+record_name=''
+target=''
+
+usage() {
+  echo "usage: archive-agent [--verify-phrase-file <path|->] [--record-name <slug>] <target>" >&2
+}
+
+fail() {
+  echo "archive-agent: $*" >&2
+  exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --verify-phrase-file)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      phrase_file=$2
+      shift 2
+      ;;
+    --record-name)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      record_name=$2
+      shift 2
+      ;;
+    --)
+      shift
+      [[ $# -eq 1 ]] || { usage; exit 2; }
+      target=$1
+      shift
+      ;;
+    -*)
+      usage
+      exit 2
+      ;;
+    *)
+      [[ -z "$target" ]] || { usage; exit 2; }
+      target=$1
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$target" ]] || { usage; exit 2; }
+case "$target" in
+  =*|%*) ;;
+  *) fail "target must be exact: prefix a session/window target with = or use a pane ID" ;;
+esac
+[[ -x "$session_info" ]] || fail "session-info is not executable beside this helper"
+
+for dependency in tmux git date find sed awk grep plutil osascript mktemp mv chmod mkdir head rm uname; do
+  command -v "$dependency" >/dev/null 2>&1 || fail "required command is not available: $dependency"
+done
+[[ $(uname -s) == Darwin ]] || fail "this helper currently supports macOS only"
+
+if [[ -n "${TMUX_SOCKET_PATH:-}" && -n "${TMUX_SOCKET_NAME:-}" ]]; then
+  fail "set only one of TMUX_SOCKET_PATH or TMUX_SOCKET_NAME"
+fi
+if [[ -n "${TMUX_SOCKET_PATH:-}" ]]; then
+  tmux_cmd=(tmux -S "$TMUX_SOCKET_PATH")
+  socket_record="path:$TMUX_SOCKET_PATH"
+elif [[ -n "${TMUX_SOCKET_NAME:-}" ]]; then
+  tmux_cmd=(tmux -L "$TMUX_SOCKET_NAME")
+  socket_record="name:$TMUX_SOCKET_NAME"
+else
+  tmux_cmd=(tmux)
+  socket_record=default
+fi
+
+pane_format=$'#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}'
+pane_details=$("${tmux_cmd[@]}" display-message -p -t "$target" "$pane_format" 2>/dev/null) || \
+  fail "no such tmux target on the selected socket: $target"
+pane_id=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $1}')
+session_name=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $2}')
+window_index=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $3}')
+window_name=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $4}')
+pane_index=$(printf '%s\n' "$pane_details" | awk -F '\t' '{print $5}')
+[[ -n "$pane_id" && -n "$session_name" && -n "$window_index" && -n "$pane_index" ]] || \
+  fail "could not canonicalize tmux target: $target"
+tmux_window="$session_name:$window_index"
+tmux_pane="$tmux_window.$pane_index"
+
+pane_capture=$("${tmux_cmd[@]}" capture-pane -p -t "$pane_id" 2>/dev/null) || \
+  fail "pane disappeared before it could be archived: $tmux_pane"
+
+phrase=''
+if [[ -n "$phrase_file" ]]; then
+  if [[ "$phrase_file" == - ]]; then
+    IFS= read -r phrase || true
+  else
+    [[ -r "$phrase_file" ]] || fail "verification phrase file is not readable: $phrase_file"
+    IFS= read -r phrase < "$phrase_file" || true
+  fi
+  [[ -n "$phrase" ]] || fail "verification phrase must be one nonempty line"
+fi
+pane_phrase_match=false
+if [[ -n "$phrase" ]] && printf '%s\n' "$pane_capture" | grep -Fq -- "$phrase"; then
+  pane_phrase_match=true
+fi
+unset pane_capture
+
+set +e
+info_output=$("$session_info" "$pane_id" 2>&1)
+info_exit=$?
+set -e
+if [[ $info_exit -eq 2 ]]; then
+  printf '%s\n' "$info_output" >&2
+  fail "session-info could not inspect the live pane"
+fi
+if [[ $info_exit -ne 0 && $info_exit -ne 3 ]]; then
+  fail "session-info returned unexpected exit code $info_exit"
+fi
+
+cli=$(printf '%s\n' "$info_output" | sed -n 's/^cli=//p' | head -1)
+cli_started=$(printf '%s\n' "$info_output" | sed -n 's/^started=//p' | head -1)
+cwd=$(printf '%s\n' "$info_output" | sed -n 's/^cwd=//p' | head -1)
+[[ -n "$cli" && -n "$cli_started" && -n "$cwd" ]] || fail "session-info omitted required process metadata"
+cwd_canonical=$(cd "$cwd" 2>/dev/null && pwd -P) || fail "agent cwd is no longer accessible: $cwd"
+
+worktree=$(git -C "$cwd_canonical" rev-parse --show-toplevel 2>/dev/null) || \
+  fail "agent cwd is not inside a Git worktree: $cwd"
+source_checkout=$(git -C "$worktree" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)
+[[ -n "$source_checkout" && -d "$source_checkout" ]] || fail "could not resolve the main worktree"
+branch=$(git -C "$worktree" branch --show-current 2>/dev/null || true)
+
+if [[ -z "$record_name" ]]; then
+  [[ -n "$branch" ]] || fail "detached worktree requires --record-name"
+  record_name=$branch
+fi
+[[ "$record_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || \
+  fail "record name must be one safe path component: $record_name"
+
+commit_sha=$(git -C "$worktree" rev-parse HEAD 2>/dev/null) || fail "could not resolve worktree HEAD"
+commit_summary=$(git -C "$worktree" log -1 --format=%s 2>/dev/null) || fail "could not read worktree commit"
+if [[ -n $(git -C "$worktree" status --porcelain 2>/dev/null) ]]; then
+  worktree_dirty=true
+else
+  worktree_dirty=false
+fi
+
+issue=''
+issue_url=''
+if [[ "$branch" =~ ^issue-([0-9]+)$ ]]; then
+  issue=${BASH_REMATCH[1]}
+  remote=$(git -C "$worktree" remote get-url origin 2>/dev/null || true)
+  case "$remote" in
+    git@github.com:*) repo_path=${remote#git@github.com:} ;;
+    https://github.com/*) repo_path=${remote#https://github.com/} ;;
+    http://github.com/*) repo_path=${remote#http://github.com/} ;;
+    *) repo_path='' ;;
+  esac
+  repo_path=${repo_path%.git}
+  [[ -n "$repo_path" ]] && issue_url="https://github.com/$repo_path/issues/$issue"
+fi
+
+archive_dir="$source_checkout/.tmux-agents"
+record="$archive_dir/$record_name.json"
+[[ ! -L "$archive_dir" ]] || fail "archive directory must not be a symlink: $archive_dir"
+if [[ -e "$archive_dir" && ! -d "$archive_dir" ]]; then
+  fail "archive path exists and is not a directory: $archive_dir"
+fi
+mkdir -p "$archive_dir" || fail "could not create archive directory: $archive_dir"
+chmod 700 "$archive_dir" || fail "could not protect archive directory: $archive_dir"
+
+if [[ -e "$record" ]]; then
+  [[ ! -L "$record" && -f "$record" && -r "$record" ]] || fail "existing record is not a readable regular file: $record"
+  existing_schema=$(plutil -extract schema_version raw -o - -- "$record" 2>/dev/null || true)
+  [[ "$existing_schema" == 1 ]] || fail "existing record has no supported schema_version=1: $record"
+fi
+
+temp_root=$(mktemp -d "${TMPDIR:-/tmp}/tmux-archive-agent.XXXXXX") || fail "could not create temporary directory"
+candidates_raw="$temp_root/candidates.raw"
+candidates="$temp_root/candidates.tsv"
+superseded_raw="$temp_root/superseded.raw"
+superseded="$temp_root/superseded.tsv"
+record_tmp=''
+: > "$candidates_raw"
+: > "$superseded_raw"
+
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+cleanup() {
+  rm -rf "$temp_root"
+  if [[ -n "$record_tmp" && -e "$record_tmp" ]]; then
+    rm -f "$record_tmp"
+  fi
+}
+trap cleanup EXIT
+
+add_candidate() {
+  candidate_id=$1
+  candidate_path=$2
+  candidate_started=${3:-}
+  candidate_cwd_match=${4:-false}
+  printf '%s\t%s\t%s\t%s\n' "$candidate_id" "$candidate_path" "$candidate_started" "$candidate_cwd_match" >> "$candidates_raw"
+}
+
+resolved_id=$(printf '%s\n' "$info_output" | sed -n 's/^session_id=//p' | head -1)
+resolved_path=$(printf '%s\n' "$info_output" | sed -n 's/^transcript=//p' | head -1)
+info_note=$(printf '%s\n' "$info_output" | sed -n 's/^note=//p' | head -1)
+if [[ -n "$resolved_path" ]]; then
+  add_candidate "$resolved_id" "$resolved_path" '' false
+fi
+while IFS= read -r line; do
+  case "$line" in
+    candidate=*)
+      value=${line#candidate=}
+      candidate_id=${value##* session_id=}
+      candidate_path=${value% session_id=*}
+      add_candidate "$candidate_id" "$candidate_path" '' false
+      ;;
+  esac
+done <<EOF
+$info_output
+EOF
+
+cli_version=''
+resolved_started=''
+resolved_cwd_match=false
+resolved_id_match=true
+if [[ "$cli" == codex && $info_exit -eq 0 && -r "$resolved_path" ]]; then
+  resolved_meta_type=$(sed -n '1p' "$resolved_path" | plutil -extract type raw -o - -- - 2>/dev/null || true)
+  resolved_meta_cwd=$(sed -n '1p' "$resolved_path" | plutil -extract payload.cwd raw -o - -- - 2>/dev/null || true)
+  resolved_meta_id=$(sed -n '1p' "$resolved_path" | plutil -extract payload.id raw -o - -- - 2>/dev/null || true)
+  if [[ -z "$resolved_meta_id" ]]; then
+    resolved_meta_id=$(sed -n '1p' "$resolved_path" | plutil -extract payload.session_id raw -o - -- - 2>/dev/null || true)
+  fi
+  resolved_started=$(sed -n '1p' "$resolved_path" | plutil -extract payload.timestamp raw -o - -- - 2>/dev/null || true)
+  cli_version=$(sed -n '1p' "$resolved_path" | plutil -extract payload.cli_version raw -o - -- - 2>/dev/null || true)
+  resolved_meta_cwd_canonical=$resolved_meta_cwd
+  if [[ -d "$resolved_meta_cwd" ]]; then
+    resolved_meta_cwd_canonical=$(cd "$resolved_meta_cwd" 2>/dev/null && pwd -P) || resolved_meta_cwd_canonical=$resolved_meta_cwd
+  fi
+  if [[ "$resolved_meta_type" == session_meta && "$resolved_meta_cwd_canonical" == "$cwd_canonical" ]]; then
+    resolved_cwd_match=true
+  fi
+  if [[ -z "$resolved_meta_id" || "$resolved_meta_id" != "$resolved_id" ]]; then
+    resolved_id_match=false
+  fi
+  add_candidate "$resolved_id" "$resolved_path" "$resolved_started" "$resolved_cwd_match"
+
+  codex_root=${TMUX_SKILL_CODEX_SESSIONS_DIR:-${HOME:-}/.codex/sessions}
+  while IFS= read -r -d $'\0' transcript; do
+    [[ "$transcript" != "$resolved_path" ]] || continue
+    meta_type=$(sed -n '1p' "$transcript" | plutil -extract type raw -o - -- - 2>/dev/null || true)
+    [[ "$meta_type" == session_meta ]] || continue
+    meta_cwd=$(sed -n '1p' "$transcript" | plutil -extract payload.cwd raw -o - -- - 2>/dev/null || true)
+    meta_id=$(sed -n '1p' "$transcript" | plutil -extract payload.id raw -o - -- - 2>/dev/null || true)
+    if [[ -z "$meta_id" ]]; then
+      meta_id=$(sed -n '1p' "$transcript" | plutil -extract payload.session_id raw -o - -- - 2>/dev/null || true)
+    fi
+    meta_started=$(sed -n '1p' "$transcript" | plutil -extract payload.timestamp raw -o - -- - 2>/dev/null || true)
+    [[ -n "$meta_id" && -n "$meta_started" && -n "$resolved_started" ]] || continue
+    meta_cwd_canonical=$meta_cwd
+    if [[ -d "$meta_cwd" ]]; then
+      meta_cwd_canonical=$(cd "$meta_cwd" 2>/dev/null && pwd -P) || meta_cwd_canonical=$meta_cwd
+    fi
+    if [[ "$meta_cwd_canonical" == "$cwd_canonical" && "$meta_started" < "$resolved_started" ]]; then
+      printf '%s\t%s\t%s\t%s\n' "$meta_id" "$transcript" "$meta_started" 'earlier session_meta timestamp for the same cwd' >> "$superseded_raw"
+    fi
+  done < <(find "$codex_root" -maxdepth 6 -type f -name 'rollout-*.jsonl' -print0 2>/dev/null)
+fi
+
+awk -F '\t' '{if (!seen[$2]++) order[++count]=$2; value[$2]=$0} END {for (item=1; item<=count; item++) print value[order[item]]}' "$candidates_raw" > "$candidates"
+
+candidate_phrase_flags="$temp_root/phrase-flags.tsv"
+: > "$candidate_phrase_flags"
+while IFS=$'\t' read -r candidate_id candidate_path candidate_started candidate_cwd_match; do
+  matched=false
+  if [[ -n "$phrase" && -r "$candidate_path" ]] && grep -Fq -- "$phrase" "$candidate_path"; then
+    matched=true
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$candidate_id" "$candidate_path" "$candidate_started" "$candidate_cwd_match" "$matched" >> "$candidate_phrase_flags"
+done < "$candidates"
+
+confidence=review
+archive_status=review
+selected_id=''
+selected_path=''
+selected_started=''
+if [[ $info_exit -eq 3 ]]; then
+  resolution_method='session-info did not resolve one current transcript; candidates recorded for review without overriding its result'
+elif [[ -z "$resolved_id" || -z "$resolved_path" || ! -r "$resolved_path" ]]; then
+  resolution_method='session-info returned no readable resolved transcript'
+elif [[ -z "$phrase" ]]; then
+  resolution_method='candidate metadata recorded; distinctive phrase verification not supplied'
+elif [[ "$pane_phrase_match" != true ]]; then
+  resolution_method='verification phrase was not present in the visible pane'
+elif ! grep -Fq -- "$phrase" "$resolved_path"; then
+  resolution_method='verification phrase matched the pane but not the transcript resolved by session-info'
+elif [[ "$cli" == codex && "$resolved_cwd_match" != true ]]; then
+  resolution_method='session-info resolved a Codex transcript whose session_meta cwd did not match the live process'
+elif [[ "$cli" == codex && "$resolved_id_match" != true ]]; then
+  resolution_method='session-info session ID did not match the resolved Codex session_meta record'
+elif [[ "$cli" == codex && -z "$resolved_started" ]]; then
+  resolution_method='resolved Codex session_meta record had no start timestamp'
+else
+  confidence=high
+  archive_status=resolved
+  selected_id=$resolved_id
+  selected_path=$resolved_path
+  selected_started=$resolved_started
+  if [[ "$cli" == codex ]]; then
+    resolution_method="session-info resolved filename timestamp plus recorded cwd (${info_note:-single candidate}); session_meta ID and cwd verified; distinctive phrase matched the pane and resolved transcript; lsof transcript handles not used"
+  else
+    resolution_method="session-info resolved one transcript (${info_note:-single candidate}); distinctive phrase matched the pane and resolved transcript"
+  fi
+fi
+
+if [[ -e "$record" ]]; then
+  old_id=$(plutil -extract session_id raw -o - -- "$record" 2>/dev/null || true)
+  old_path=$(plutil -extract transcript raw -o - -- "$record" 2>/dev/null || true)
+  old_started=$(plutil -extract session_started raw -o - -- "$record" 2>/dev/null || true)
+  if [[ -n "$old_id" && "$old_id" != "$selected_id" ]]; then
+    printf '%s\t%s\t%s\t%s\n' "$old_id" "$old_path" "$old_started" 'previously archived current session' >> "$superseded_raw"
+  fi
+  old_count=$(plutil -extract superseded_sessions raw -o - -- "$record" 2>/dev/null || echo 0)
+  old_index=0
+  while [[ "$old_index" -lt "$old_count" ]]; do
+    old_id=$(plutil -extract "superseded_sessions.$old_index.session_id" raw -o - -- "$record" 2>/dev/null || true)
+    old_path=$(plutil -extract "superseded_sessions.$old_index.transcript" raw -o - -- "$record" 2>/dev/null || true)
+    old_started=$(plutil -extract "superseded_sessions.$old_index.session_started" raw -o - -- "$record" 2>/dev/null || true)
+    old_reason=$(plutil -extract "superseded_sessions.$old_index.reason" raw -o - -- "$record" 2>/dev/null || echo 'previous archive history')
+    [[ -n "$old_id" || -n "$old_path" ]] && printf '%s\t%s\t%s\t%s\n' "$old_id" "$old_path" "$old_started" "$old_reason" >> "$superseded_raw"
+    old_index=$((old_index + 1))
+  done
+fi
+awk -F '\t' 'BEGIN {OFS=FS} {key=$1; if (key=="") key=$2} key!="" && !seen[key]++' "$superseded_raw" > "$superseded"
+
+record_tmp=$(mktemp "$archive_dir/.$record_name.XXXXXX") || fail "could not create temporary archive record"
+archived_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+set +e
+osascript -l JavaScript - "$record_tmp" "$candidate_phrase_flags" "$superseded" \
+  "$archive_status" "$archived_at" "$issue" "$issue_url" "$branch" "$worktree" \
+  "$commit_sha $commit_summary" "$worktree_dirty" "$socket_record" "$tmux_window" \
+  "$window_name" "$tmux_pane" "$cli" "$cli_version" "$cli_started" "$selected_id" \
+  "$selected_path" "$selected_started" "$confidence" "$resolution_method" <<'JXA'
+ObjC.import('Foundation');
+
+function readText(path) {
+  const value = $.NSString.stringWithContentsOfFileEncodingError(
+    path,
+    $.NSUTF8StringEncoding,
+    null
+  );
+  return value ? ObjC.unwrap(value) : '';
+}
+
+function rows(path) {
+  const text = readText(path);
+  return text === '' ? [] : text.replace(/\n$/, '').split('\n').map(line => line.split('\t'));
+}
+
+function run(argv) {
+  const output = argv[0];
+  const candidates = rows(argv[1]).map(fields => ({
+    session_id: fields[0] || null,
+    transcript: fields[1],
+    session_started: fields[2] || null,
+    cwd_match: fields[3] === 'true',
+    phrase_match: fields[4] === 'true'
+  }));
+  const superseded = rows(argv[2]).map(fields => ({
+    session_id: fields[0] || null,
+    transcript: fields[1],
+    session_started: fields[2] || null,
+    reason: fields[3]
+  }));
+  const record = {
+    schema_version: 1,
+    archive_status: argv[3],
+    archived_at: argv[4],
+    issue: argv[5] === '' ? null : Number(argv[5]),
+    issue_url: argv[6] || null,
+    branch: argv[7] || null,
+    worktree: argv[8],
+    commit: argv[9],
+    worktree_dirty: argv[10] === 'true',
+    tmux_socket: argv[11],
+    tmux_window: argv[12],
+    tmux_window_name: argv[13],
+    tmux_pane: argv[14],
+    cli: argv[15],
+    cli_version: argv[16] || null,
+    cli_started: argv[17],
+    session_id: argv[18] || null,
+    transcript: argv[19] || null,
+    session_started: argv[20] || null,
+    resolution_confidence: argv[21],
+    resolution_method: argv[22],
+    candidates,
+    superseded_sessions: superseded
+  };
+  const json = $(JSON.stringify(record, null, 2) + '\n');
+  const wrote = json.writeToFileAtomicallyEncodingError(
+    output,
+    true,
+    $.NSUTF8StringEncoding,
+    null
+  );
+  if (!wrote) throw new Error('could not serialize archive record');
+}
+JXA
+serialize_exit=$?
+set -e
+if [[ $serialize_exit -ne 0 ]]; then
+  rm -f "$record_tmp"
+  fail "could not serialize archive record"
+fi
+
+current_pane=$("${tmux_cmd[@]}" display-message -p -t "$pane_id" '#{pane_id}' 2>/dev/null) || {
+  rm -f "$record_tmp"
+  fail "pane disappeared before the archive record could be committed: $tmux_pane"
+}
+if [[ "$current_pane" != "$pane_id" ]]; then
+  rm -f "$record_tmp"
+  fail "tmux target changed while it was being archived: $tmux_pane"
+fi
+chmod 600 "$record_tmp" || fail "could not protect temporary archive record"
+mv -f "$record_tmp" "$record" || fail "could not atomically write archive record: $record"
+record_tmp=''
+
+echo "archive=$record"
+echo "resolution_confidence=$confidence"
+echo "resolution_method=$resolution_method"
+if [[ "$confidence" == high ]]; then
+  echo "session_id=$selected_id"
+  echo "transcript=$selected_path"
+  exit 0
+fi
+echo "note=archive was written for review; do not kill the tmux window"
+exit 3

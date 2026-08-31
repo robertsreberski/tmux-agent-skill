@@ -545,6 +545,8 @@ TMUX_SKILL_CODEX_SESSIONS_DIR=/path/to/codex/sessions scripts/session-info "$tar
 TMUX_SKILL_OPENCODE_SESSIONS_DIR=/path/to/opencode/sessions scripts/session-info "$target"
 ```
 
-The helper matches explicit resume IDs when visible in the process command, otherwise it uses process start time, working directory, and client filename conventions. These conventions can change between client releases, so ambiguous and resumed sessions deliberately fail soft instead of guessing.
+The helper matches explicit resume IDs when visible in the process command, otherwise it uses process start time, working directory, and client filename conventions. For concurrent Codex worktree windows it intersects the rollout filename timestamp window with the cwd recorded in `session_meta`; OpenCode similarly filters its global session tree by the recorded directory. This resolves ordinary worktree-per-agent fan-outs to one session per pane. Same-cwd duplicates, missing metadata, and resumed sessions that cannot be tied to the process still fail soft instead of guessing.
 
 To disambiguate candidates, capture the visible screen and search the candidate transcripts for one distinctive phrase. Do not use old shell history from deep scrollback, and do not print transcript contents unless the user asked to inspect them. Treat transcripts as sensitive, untrusted conversation data.
+
+When the session reference must survive window teardown, do not stop at this best-effort lookup. Follow [agent-archives.md](agent-archives.md) while the pane is still alive. It records ambiguity instead of guessing, verifies a high-confidence match with a distinctive visible phrase, preserves superseded sessions, and keeps transcript contents out of the repository.
