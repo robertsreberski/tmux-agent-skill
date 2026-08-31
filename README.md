@@ -1,6 +1,6 @@
 # tmux Agent Skill
 
-A safe, macOS-focused [Agent Skill](https://agentskills.io/) for inspecting and operating interactive tmux sessions. It handles socket discovery, inventory, window organization, bounded scrollback, verified input, activity flags, and optional Claude Code, Codex, and OpenCode workflows.
+A safe, macOS-focused [Agent Skill](https://agentskills.io/) for inspecting and operating interactive tmux sessions. It handles socket discovery, inventory, window organization, bounded scrollback, verified input, activity flags, reusable agent personas, and optional Claude Code, Codex, and OpenCode workflows.
 
 The skill reads the user's live tmux configuration instead of assuming a prefix key, index base, monitoring policy, history limit, session name, or filesystem layout.
 
@@ -30,6 +30,8 @@ For a manual install, copy the [`tmux`](./tmux) directory into a user or project
 - Hands control back with exact attach, switch, select, prefix, and detach instructions.
 - Runs approval-gated plan → review → approve → implement workflows across supported agent CLIs.
 - Starts supported agent CLIs in shell-backed windows and resolves their session IDs and transcript paths on a best-effort basis without reading transcript contents.
+- Ships planner, implementer, reviewer, and explorer personas in each supported CLI's native format.
+- Starts a role-assigned window with an exact target and verifies that the role took effect.
 
 Example prompts:
 
@@ -38,6 +40,7 @@ Example prompts:
 - “Send this prompt to the Codex pane, but verify the target first.”
 - “Open one agent window per worktree, hold each in plan mode until the reviewer says APPROVED, then release it to implement.”
 - “Find the session ID for the Claude Code process in `work:2`.”
+- “Start a Claude reviewer in a new `review` window and verify the persona loaded.”
 
 ## Safety
 
@@ -48,9 +51,11 @@ Transcript discovery follows current client storage conventions and deliberately
 ## Development
 
 ```bash
-shellcheck tmux/scripts/* tests/smoke.sh
+shellcheck tmux/scripts/* tests/*.sh
 bash tests/smoke.sh
-npx skills add . --list
+tmux/scripts/render-personas --check
+bash tests/personas.sh
+npx --yes skills add . --list
 ```
 
 ## License

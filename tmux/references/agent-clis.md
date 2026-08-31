@@ -439,6 +439,71 @@ git diff main..issue-5
 
 Only the explicit verdict releases the worker.
 
+## Bundled personas
+
+The skill ships `planner`, `implementer`, `reviewer`, and `explorer` under `personas/`. Canonical instructions live in `personas/source/`; generated files map them to each CLI. The [Claude Code](#claude-code), [Codex](#codex), and [OpenCode](#opencode) sections above remain authoritative for executable discovery, plan and execution mode transitions, readiness markers, model and effort controls, permission or bypass rules, authentication and trust, and session recovery. This section adds only persona selection and activation verification.
+
+| CLI | Native artifact | Root-session selection |
+|---|---|---|
+| Codex | `personas/codex/<name>.toml`, installable in `~/.codex/agents/` | No named-agent launch flag in Codex 0.151.0. The root launcher reports `activation=codex-adapter`; planner follows the Codex plan workflow above. |
+| Claude Code | `personas/claude/<name>.md`, installable in `~/.claude/agents/` | `--agents <json> --agent <name>` using the bundled session JSON. |
+| OpenCode | `personas/opencode/opencode.json` | `OPENCODE_CONFIG=<bundle> opencode --agent <name>`. |
+
+Inspect existing destination files before persistent installation and never overwrite a user-authored persona without explicit approval. See [personas/README.md](../personas/README.md) for absent-only installation. The bundled launcher does not write to the user's CLI configuration or weaken the permission behavior documented above.
+
+OpenCode already provides `build` and `plan` as primary agents and `general` and `explore` as subagents. The bundled names are distinct and use `mode: all`, so `planner`, `implementer`, `reviewer`, and `explorer` are selectable at launch without replacing the built-ins. Confirm discovery with:
+
+```bash
+OPENCODE_CONFIG=/path/to/tmux/personas/opencode/opencode.json opencode agent list
+```
+
+### Auto-start and verify a role
+
+Use the single entry point with a session that already exists and a working directory that has already been chosen:
+
+```bash
+scripts/start-agent \
+  --session work \
+  --window issue-6-plan \
+  --cwd "$project_dir" \
+  --cli codex \
+  --persona planner \
+  --model gpt-5.6-sol \
+  --effort xhigh
+```
+
+Resolve `scripts/...` against the skill directory. As with the other helpers, select an alternate server with exactly one of `TMUX_SOCKET_PATH` or `TMUX_SOCKET_NAME`.
+
+The helper validates the session, directory, window collision, CLI, and role before creating anything. It then follows the shell-backed launch and prompt-safety workflow above, sends a role-neutral activation check, and requires the role-specific `TMUX_PERSONA_ACTIVE=<name>` response. Successful output includes:
+
+```text
+target=work:3
+exact_target==work:3
+cli=codex
+persona=planner
+activation=codex-adapter
+marker=TMUX_PERSONA_ACTIVE=planner
+status=verified
+```
+
+Exit `2` means invalid input or preflight state. Exit `3` leaves the newly created window intact because readiness or activation was not verified; inspect the printed exact target. The earlier per-CLI startup and dialog rules still apply: the helper never answers a trust, login, setup, permission, purchase, or destructive confirmation dialog.
+
+### Persona activation by CLI
+
+Claude Code receives the bundled definitions through its native `--agents` mechanism and selects the requested main-session role with `--agent`. The generated Markdown files use `model: inherit`; read-only roles omit editing tools. This role selection is distinct from the `--permission-mode plan` launch used by the approval-gated workflow above, and a persona marker does not replace its plan-mode status check.
+
+OpenCode natively selects a launch-time persona with `--agent NAME`. The helper supplies the bundled config through `OPENCODE_CONFIG`, adds a per-launch `reasoningEffort` overlay through `OPENCODE_CONFIG_CONTENT`, and refuses to replace caller-provided values for either variable. The bundled `planner` role is distinct from the built-in `plan` agent used by the approval-gated workflow above; a persona marker does not replace the required `Plan ·` or execution footer. The helper never passes `--auto`.
+
+Codex has no equivalent root-persona launch flag. Its generated TOML files are native named subagent definitions, but the root-window adapter injects the same canonical role text through `developer_instructions` and reports `activation=codex-adapter`. For `planner`, the adapter follows the Codex plan workflow above. That section is the sole source of truth for launch, the plan-mode effort override, the visible status check, and the repository-wide trust decision; the persona marker does not replace any of them.
+
+Planner, reviewer, and explorer Codex adapters also tighten the CLI sandbox to `read-only`; implementer does not override the user's configured sandbox.
+
+### Composition boundaries
+
+Worktree creation, destination selection, branch naming, and cleanup belong to the [Git worktree playbook](git-worktrees.md) delivered by issue #3. `start-agent` accepts an already resolved `--cwd`; it does not create or clean up a worktree or branch.
+
+The approval-gated lifecycle delivered by issue #5 is documented in [Prepare the fan-out and approval gate](#prepare-the-fan-out-and-approval-gate) and each CLI's plan workflow above. These personas establish the role boundary and verify initial activation only. Planner stops at approval, and the launcher never approves a plan, switches to execution mode, or changes a planner into an implementer.
+
 ## Session IDs and transcripts
 
 Run the helper while the pane-to-process relationship still exists:
