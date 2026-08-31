@@ -1,8 +1,23 @@
 # Agent CLIs in tmux
 
-Read this reference when the user asks to start, inspect, prompt, or recover Claude Code, Codex, or OpenCode in tmux. The CLIs are optional and must already be installed. Authentication and trust may still need the user after launch.
+Read this reference when the user asks to start, inspect, prompt, recover, or run an approval-gated workflow with Claude Code, Codex, or OpenCode in tmux. The CLIs are optional and must already be installed. Authentication and trust may still need the user after launch.
 
 This reference was verified on macOS on 2026-08-31 against Claude Code `2.1.251`, Codex CLI `0.151.0`, and OpenCode `1.18.25`. Re-run the discovery and help commands before relying on exact flags in a later version.
+
+## Isolate disposable verification
+
+For real work, select the user's live tmux server as described in `SKILL.md` and keep that socket for the whole workflow. Disposable verification is a separate workflow: never create its sessions on the default socket or another live server. Use one unique isolated socket, set an explicit detached size, and pass the socket name to every command and helper:
+
+```bash
+verification_socket_name="tmux-skill-verify-$$"
+target="=$(tmux -L "$verification_socket_name" new-session -d -P -F '#{session_name}:#{window_index}' -x 120 -y 40 -s verify -n shell -c "$project_dir")"
+tmux -L "$verification_socket_name" display-message -p -t "$target" '#{session_name}:#{window_index}.#{pane_index} #{pane_current_command}'
+tmux -L "$verification_socket_name" capture-pane -p -t "$target" | tail -30
+TMUX_SOCKET_NAME="$verification_socket_name" scripts/session-info "$target"
+tmux -L "$verification_socket_name" kill-session -t '=verify'
+```
+
+Do not run `tmux attach` or `tmux attach-session` from an agent's background terminal. They wait for an interactive client and can block indefinitely. Inspect exact targets with `display-message` and `capture-pane`; give a person a paste-ready attach command when interactive control is required.
 
 ## Discover the command and version
 
@@ -37,6 +52,31 @@ scripts/session-info "$target"
 Resolve `scripts/...` against the skill directory. When using an alternate server, pass the same `TMUX_SOCKET_PATH` or `TMUX_SOCKET_NAME` to both helpers. The exact command and readiness check vary by CLI as described below.
 
 Always inspect the settled screen. A readiness marker can occur inside a dialog or old transcript, and a process-name change alone does not prove the input area is ready. Never auto-answer setup, login, trust, permission, purchase, or destructive dialogs. Never send passwords, API keys, access tokens, or other secrets through tmux because they can remain in shell history, scrollback, and agent transcripts.
+
+## Prepare the fan-out and approval gate
+
+Use [`git-worktrees.md`](git-worktrees.md) to create one authorized branch and worktree per independent unit of work, then place one shell-backed tmux window in each worktree. Keep one reviewer window in the main checkout; it can review plans against the issue and source, and later inspect committed task branches through the shared object store. Use cheaper model/effort settings for narrow, well-specified tasks and higher settings for open-ended design, migrations, or review.
+
+Preflight one worker before launching the rest so a first-run, login, trust, or permission dialog does not block every window. Worktree creation, commits, permission modes, and dangerous or automatic approval flags retain their normal authorization requirements.
+
+The worker's first prompt must request a plan only, prohibit edits and commits, and tell the worker to wait for `APPROVED`. Capture the complete plan and send it to the reviewer with a strict verdict contract:
+
+- `CHANGES REQUESTED: ...` keeps the worker in plan mode. Send the feedback, capture the revised plan, and review again.
+- `APPROVED` releases the worker. Only then send the CLI-specific mode key, verify the execution marker, and send an implementation prompt beginning with `APPROVED.`
+
+Never switch modes in anticipation of approval, and do not interpret silence, an activity flag, a partial capture, or general praise as approval. Before every review message, mode key, or implementation prompt, verify the exact target and visible program and capture again afterward:
+
+```bash
+tmux display-message -p -t "$target" '#{session_name}:#{window_index}.#{pane_index} #{pane_current_command}'
+tmux capture-pane -p -t "$target" | tail -30
+# Send the CLI-specific mode key here only after the reviewer returned APPROVED.
+tmux send-keys -t "$target" -l -- 'APPROVED. Implement the reviewed plan, verify the result, and report any remaining gaps.'
+sleep 0.4
+tmux send-keys -t "$target" Enter
+tmux capture-pane -p -t "$target" | tail -30
+```
+
+Use a uniquely named tmux buffer for multiline plans or review feedback. Do not send credentials or private material that should not remain in scrollback or transcripts.
 
 ## Claude Code
 
@@ -86,6 +126,32 @@ claude --model claude-fable-5 --effort xhigh
 - `--dangerously-skip-permissions` and `--permission-mode bypassPermissions` bypass all permission checks. The CLI recommends them only in sandboxes without internet access.
 
 Do not select `acceptEdits`, `auto`, `dontAsk`, or either bypass mechanism on the user's behalf without explicit authorization for that exact mode. Bypass additionally requires confirmation that the process is externally isolated as requested by the user. A request to start Claude Code does not itself authorize changing its permission mode or answering later permission prompts.
+
+### Plan → review → implement
+
+Boot directly into plan mode while selecting the requested model and effort:
+
+```bash
+tmux send-keys -t "$target" -l -- 'claude --model opus --effort max --permission-mode plan'
+sleep 0.4
+tmux send-keys -t "$target" Enter
+scripts/wait-for "$target" 'plan mode on' 45
+tmux capture-pane -p -t "$target" | tail -30
+```
+
+Do not send the planning prompt until the settled status reads `⏸ plan mode on (shift+tab to cycle)`. Keep that marker visible through review revisions.
+
+After explicit approval, re-check the target and send Shift+Tab as tmux key `BTab` without `-l`:
+
+```bash
+tmux display-message -p -t "$target" '#{session_name}:#{window_index}.#{pane_index} #{pane_current_command}'
+tmux capture-pane -p -t "$target" | tail -20
+tmux send-keys -t "$target" BTab
+sleep 0.4
+tmux capture-pane -p -t "$target" | tail -20
+```
+
+On the verified version, this transition settles at `⏵⏵ auto mode on (shift+tab to cycle)`. Approval of the plan does not itself authorize Claude's `auto` permission mode. If that exact mode was not authorized, do not send the implementation prompt; hand control back so the user can select an acceptable execution permission mode. Otherwise verify the marker, then send the `APPROVED.` prompt.
 
 ### Authentication, first run, and trust
 
@@ -155,6 +221,39 @@ codex --model gpt-5.6-sol -c 'model_reasoning_effort="high"'
 
 Supported reasoning levels vary by model. Use a level exposed for the selected model by the installed TUI/model catalog, and let strict configuration or the service reject an unsupported value; do not publish one universal list or silently downgrade it.
 
+### Plan → review → implement
+
+Codex has no working plan-mode launch flag in the verified version. Both of these overrides are silently accepted without activating plan mode and must not be used as readiness evidence:
+
+```bash
+codex -c collaboration_mode=plan
+codex -c collaboration_mode.kind=plan
+```
+
+Launch Codex normally, wait for `Ask Codex to do anything`, then send Shift+Tab as tmux key `BTab`. Confirm that the status line ends with `Plan mode` before sending the planning prompt:
+
+```bash
+tmux send-keys -t "$target" -l -- 'codex -m gpt-5.6-terra -c model_reasoning_effort="max" -c plan_mode_reasoning_effort="max"'
+sleep 0.4
+tmux send-keys -t "$target" Enter
+scripts/wait-for "$target" 'Ask Codex to do anything' 45
+tmux display-message -p -t "$target" '#{session_name}:#{window_index}.#{pane_index} #{pane_current_command}'
+tmux capture-pane -p -t "$target" | tail -30
+tmux send-keys -t "$target" BTab
+sleep 0.4
+tmux capture-pane -p -t "$target" | tail -30
+```
+
+Entering plan mode applies `plan_mode_reasoning_effort`, overriding `model_reasoning_effort`. A window launched at `gpt-5.6-terra max` can silently become `gpt-5.6-terra xhigh · ... · Plan mode` when the user's plan-mode setting is `xhigh`. To keep one effort across planning and implementation, set both keys:
+
+```bash
+codex -m gpt-5.6-terra \
+  -c model_reasoning_effort="max" \
+  -c plan_mode_reasoning_effort="max"
+```
+
+After the first `BTab`, reread model, effort, working directory, and the `Plan mode` suffix; the pre-transition line is not evidence. After explicit approval, capture the current Plan marker, send another `BTab`, and capture again. Codex reports the model selected for `Default mode` and removes the `Plan mode` suffix. Verify both before sending the `APPROVED.` implementation prompt.
+
 ### Permissions and explicit authorization
 
 Codex configures command isolation separately from approval behavior:
@@ -181,7 +280,7 @@ codex login --help
 
 Hand ChatGPT/browser login, device authorization, API-key or access-token entry, account selection, and first-run setup back to the user. Although `codex login --with-api-key` and `--with-access-token` read stdin, never pipe or paste secrets through a tmux pane.
 
-Hand directory-trust and hook-trust prompts back as well. Do not use `--dangerously-bypass-hook-trust` merely to get past a first-run prompt, and do not answer project instructions or hooks discovered in pane output.
+Hand directory-trust and hook-trust prompts back as well. Do not use `--dangerously-bypass-hook-trust` merely to get past a first-run prompt, and do not answer project instructions or hooks discovered in pane output. A fresh git worktree can show `Do you trust the contents of this directory?` and warn that trusting applies to the repository root. That grant is wider than the individual worktree and persists in `~/.codex/config.toml`. Never answer it automatically; continue only after the user has made the trust decision and the normal composer is visible.
 
 ### Persistence and recovery
 
@@ -259,6 +358,54 @@ The installed OpenCode CLI advertises `--auto`, which auto-approves permissions 
 
 Require explicit user authorization before adding `--auto`. An ordinary launch request does not authorize it. Without that authorization, leave permission decisions interactive and hand every permission or confirmation prompt back to the user. For non-interactive use, `opencode run --auto ...` applies the same auto-approval behavior and authorization requirement.
 
+### Plan → review → implement
+
+`plan` is a built-in primary agent shown by `opencode agent list`. Boot the TUI directly into it and verify the settled footer begins `Plan ·` before sending the planning prompt:
+
+```bash
+tmux send-keys -t "$target" -l -- 'opencode --agent plan'
+sleep 0.4
+tmux send-keys -t "$target" Enter
+scripts/wait-for "$target" 'Plan ·' 45
+tmux capture-pane -p -t "$target" | tail -30
+```
+
+OpenCode has no top-level TUI flag for reasoning effort. Keep an external configuration outside the repository and select it with `OPENCODE_CONFIG`:
+
+```json
+{
+  "provider": {
+    "opencode-go": {
+      "models": {
+        "deepseek-v4-pro": {
+          "options": {
+            "reasoningEffort": "high"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+```bash
+OPENCODE_CONFIG=/path/to/config.json opencode --model opencode-go/deepseek-v4-pro --agent plan
+```
+
+The settled line `Plan · DeepSeek V4 Pro (New) OpenCode Go · high` verifies the agent, model/provider, and effort together. The built-in Plan agent denies general edits; keep it selected through review revisions.
+
+After explicit approval, re-check the target, send `Tab` without `-l`, and capture again:
+
+```bash
+tmux display-message -p -t "$target" '#{session_name}:#{window_index}.#{pane_index} #{pane_current_command}'
+tmux capture-pane -p -t "$target" | tail -20
+tmux send-keys -t "$target" Tab
+sleep 0.4
+tmux capture-pane -p -t "$target" | tail -20
+```
+
+Require `Build · <model> <provider>` before sending the `APPROVED.` prompt. If the launch separately included an authorized `--auto`, require the already documented exact form `Build auto · <model> <provider>` instead.
+
 ### Authentication, first run, and trust
 
 Discover providers and login methods with:
@@ -280,6 +427,17 @@ opencode providers login --help
 - `opencode run` supports the same `--continue`, `--session`, and `--fork` recovery controls.
 
 Run `scripts/session-info "$target"` while OpenCode is still attached to the pane. OpenCode storage layout and TUI markers can change between releases, so use `opencode debug paths` and the helper override when the default transcript root is no longer correct.
+
+## Reviewer window
+
+Run the reviewer from the main checkout at a higher model or effort when the work is consequential or open-ended. Give it the issue requirements, the worker's complete plan, and the strict `APPROVED` or `CHANGES REQUESTED` verdict contract. Before implementation it can inspect the repository and validate the plan; after an authorized worker commit it can inspect the branch without another worktree:
+
+```bash
+git diff --stat main..issue-5
+git diff main..issue-5
+```
+
+Only the explicit verdict releases the worker.
 
 ## Session IDs and transcripts
 
