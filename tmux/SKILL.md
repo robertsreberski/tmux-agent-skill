@@ -10,7 +10,7 @@ metadata:
 
 Use this skill to inspect and operate the user's interactive tmux servers on macOS. Prefer read-only discovery before mutation, keep one socket selected throughout a workflow, and adapt to the live tmux configuration instead of assuming a prefix key, index base, history limit, or monitoring setup.
 
-This skill requires macOS and `tmux`. For creating, inspecting, operating, or removing Git worktrees paired with tmux sessions, read [references/git-worktrees.md](references/git-worktrees.md) only when that capability is requested. For booting Claude Code, Codex, or OpenCode, assigning a bundled planner/implementer/reviewer/explorer persona, running a plan-review-approval workflow, or resolving session transcripts, read [references/agent-clis.md](references/agent-clis.md) only when that capability is requested.
+This skill requires macOS and `tmux`. For creating, inspecting, operating, or removing Git worktrees paired with tmux sessions, read [references/git-worktrees.md](references/git-worktrees.md) only when that capability is requested. For booting Claude Code, Codex, or OpenCode, assigning a bundled planner/implementer/reviewer/explorer persona, running a plan-review-approval workflow, or resolving session transcripts, read [references/agent-clis.md](references/agent-clis.md) only when that capability is requested. For supervising several agent CLI windows at once, read [references/orchestrator-polling.md](references/orchestrator-polling.md).
 
 ## Select one tmux server
 
@@ -110,6 +110,8 @@ tmux set-option -w -t '=session:window' monitor-silence 0
 ```
 
 Enable silence monitoring only for a requested watch and turn it off afterward. Flags clear when the user selects a window, and the currently viewed window may not accrue a flag, so cross-check `#{t:window_activity}`.
+
+For multi-window agent supervision, combine the flags with activity timestamps, a cheap pane-tail digest, and the precedence `BLOCKED` then `BUSY` then `IDLE` then `UNKNOWN`. Never infer readiness from the last matching line; use the [orchestrator polling playbook](references/orchestrator-polling.md).
 
 ## Hand off control
 
